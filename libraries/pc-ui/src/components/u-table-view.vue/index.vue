@@ -68,8 +68,30 @@
         :showHead="showHead"
         :rootWidth="rootWidth"
         :value-field="valueField"
-        :useMask="useMask">
+        :useMask="useMask"
+        
+        @scroll-view="onScrollViewRenderTable">
     </u-table-designer>
+    <u-table-render-footer
+        v-if="footerCalcShow"
+        ref="footerRender"
+        :visibleColumnVMs="visibleColumnVMs"
+        :currentData="currentFooterData"
+        :currentDataSource="currentDataSource"
+        :calcType="footerCalcType"
+        :calcText="footerCalcText"
+        
+        :useStickyFixed="useStickyFixed"
+        :fixedRightList="fixedRightList"
+        :fixedLeftList="fixedLeftList"
+
+        :tableWidth="tableWidth"
+        :columnVMsMap="columnVMsMap"
+
+        :line="line"
+        :ellipsis="ellipsis"
+        >
+    </u-table-render-footer>
     <u-table-view-drop-ghost :data="dropData"></u-table-view-drop-ghost>
     <u-pagination :class="$style.pagination" ref="pagination" v-if="usePagination && currentDataSource"
         :total-items="currentDataSource.total" :page="currentDataSource.paging && currentDataSource.paging.number"
@@ -178,8 +200,31 @@
         :currentValues="currentValues"
         :lazyLoad="lazyLoad"
         :bufferSize="bufferSize"
-        @resize="onResizerDragEnd">
+        @resize="onResizerDragEnd"
+        @scroll-view="onScrollViewRenderTable">
     </u-table-render>
+    <u-table-render-footer
+        v-if="footerCalcShow && currentData && currentData.length > 0"
+        ref="footerRender"
+        :visibleColumnVMs="visibleColumnVMs"
+        :currentData="currentFooterData"
+        :currentDataSource="currentDataSource"
+        :calcType="footerCalcType"
+        :calcText="footerCalcText"
+        
+        :useStickyFixed="useStickyFixed"
+        :fixedRightList="fixedRightList"
+        :fixedLeftList="fixedLeftList"
+
+        :tableWidth="tableWidth"
+        :columnVMsMap="columnVMsMap"
+
+        :line="line"
+        :ellipsis="ellipsis"
+
+        :calcFormater="footerCalcFormater"
+        >
+    </u-table-render-footer>
     <u-table-view-drop-ghost :data="dropData"></u-table-view-drop-ghost>
     <u-pagination :class="$style.pagination" ref="pagination" v-if="usePagination && currentDataSource"
         :total-items="currentDataSource.total" :page="currentDataSource.paging.number"
@@ -216,6 +261,7 @@ import * as xlsxUtils from '../../utils/xlsx';
 import UTableRender from './render.table.vue';
 import UTableDesigner from './designer.table.vue';
 import TreeTableMixin from './tree-table-mixins';
+import UTableRenderFooter from './render.footer.vue';
 
 export default {
     name: 'u-table-view',
@@ -224,6 +270,7 @@ export default {
         SEmpty,
         UTableRender,
         UTableDesigner,
+        UTableRenderFooter,
     },
     mixins: [
       MEmitter,
@@ -382,6 +429,16 @@ export default {
         nativeScroll: { type: Boolean, default: false }, // 是否使用原生滚动条
         lazyLoad: { type: Boolean, default: false }, // 懒加载
         bufferSize: { type: Number, default: 10 },
+
+        footerCalcType: { type: String, default: 'sum' },
+        footerCalcText: {
+            type: String,
+            default() {
+                return this.$tt('footerCalc');
+            },
+        },
+        footerCalcShow: { type: Boolean, default: false },
+        footerCalcFormater: Function,
     },
     data() {
         return {
@@ -427,6 +484,7 @@ export default {
             tableHeadTrArr: [],
             currentPageSize: undefined,
             rootWidth: undefined,
+            exportFooterData: undefined,
         };
     },
     provide() {
@@ -505,6 +563,12 @@ export default {
         },
         isDesignerSubForm() {
             return this.$env.VUE_APP_DESIGNER && this.subForm;
+        },
+        currentFooterData() {
+            if (this.exportFooterData) {
+                return this.exportFooterData;
+            }
+            return this.currentData;
         },
     },
     watch: {
@@ -1063,7 +1127,8 @@ export default {
                         const headEl = this.$refs.tableRender && this.$refs.tableRender.getRefs().head;
                         const headHeight = headEl ? headEl.offsetHeight : 0;
                         const paginationHeight = this.getPaginationHeight();
-                        this.bodyHeight = rootHeight - titleHeight - headHeight - paginationHeight;
+                        const footerHeight = this.$refs.footerRender ? this.$refs.footerRender.$el.offsetHeight : 0;
+                        this.bodyHeight = rootHeight - titleHeight - headHeight - paginationHeight - footerHeight;
                     }
                 } else {
                     this.bodyHeight = undefined;
@@ -1072,7 +1137,8 @@ export default {
                 // 当 root 设置了 height，设置 table 的 height，避免隐藏列时的闪烁
                 if (this.$el.style.height !== '' && this.$el.style.height !== 'auto') {
                     const paginationHeight = this.getPaginationHeight();
-                    this.tableHeight = this.$el.offsetHeight - paginationHeight;
+                    const footerHeight = this.$refs.footerRender ? this.$refs.footerRender.$el.offsetHeight : 0;
+                    this.tableHeight = this.$el.offsetHeight - paginationHeight - footerHeight;
                 } else {
                     this.tableHeight = undefined;
                 }
@@ -1551,6 +1617,46 @@ export default {
                 }
             });
             // console.timeEnd('复原表格');
+
+            if (this.footerCalcShow && this.$refs.footerRender) {
+                this.exportFooterData = arr;
+                await new Promise((res) => {
+                    this.$once('hook:updated', res);
+                });
+                const footerEl = this.$refs.footerRender.$el;
+                const bodyEl = footerEl && footerEl.querySelector('tbody');
+                const trs = Array.from(bodyEl.childNodes).filter((tr) => tr.nodeName === 'TR');
+                // let footerData = this.$refs.footerRender.getCalculation(this.footerCalcType, arr) || [];
+                // 为了与主表格保持一致，将footerData转换为字符串
+                // footerData = footerData.map((item)=>item+'');
+                const footerRes = trs.map((tr, rowIndex) => Array.from(tr.childNodes).map(
+                    (node, colIndex) => {
+                        if (node.nodeName === 'TD') {
+                            let title = node.innerText;
+                            const data = {
+                                v: title,
+                            };
+                            if (includeStyles) {
+                                const style = getXslxStyle(node);
+                                Object.assign(data, {
+                                    s: style.s,
+                                    rect: style.rect,
+                                });
+                            }
+                            return data;
+                        } else {
+                            return null;
+                        }
+                    },
+                ));
+                
+                const newResult = this.removeExcludeColumns(footerRes, excludeColumns, [], titleColIndexRelations);
+                res = res.concat(newResult[0]);
+                this.exportFooterData = undefined;
+                await new Promise((res) => {
+                    this.$once('hook:updated', res);
+                });
+            }
 
             return [res, mergesMap, headerRowCount];
         },
@@ -2950,6 +3056,9 @@ export default {
         // for 外部调用
         resetEdit(item) {
             item.editing = '';
+        },
+        onScrollViewRenderTable(data) {
+            this.$refs.footerRender && this.$refs.footerRender.syncScroll(data);
         },
     },
 };
